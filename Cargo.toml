@@ -1,8 +1,8 @@
 [package]
-name = "adaptor-home"
+name = "prosa-adaptor-home"
 version = "0.1.0"
 authors = ["Jeremy HERGAULT"]
-repository = "https://github.com/reneca/Adaptor-Home"
+repository = "https://github.com/reneca/ProSA-Adaptor-Home"
 license = "LGPL-3.0-or-later"
 edition = "2024"
 description = "ProSA Adaptors for Home"
