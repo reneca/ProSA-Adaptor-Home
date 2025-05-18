@@ -1,0 +1,31 @@
+[package]
+name = "adaptor-home"
+version = "0.1.0"
+authors = ["Jeremy HERGAULT"]
+repository = "https://github.com/reneca/Adaptor-Home"
+license = "LGPL-3.0-or-later"
+edition = "2024"
+description = "ProSA Adaptors for Home"
+
+[package.metadata.prosa.fetcher]
+adaptor = ["bbox::FetcherBBoxAdaptor", "deye_solar::FetcherDeyeSolarAdaptor", "freebox::FetcherFreeboxAdaptor"]
+
+[dependencies]
+bytes = "1"
+prosa-fetcher = "0.1"
+prosa = "0.2"
+prosa-utils = "0.2"
+serde = "1"
+tokio = "1"
+thiserror = "2"
+tracing = "0.1"
+hmac = "0.12"
+
+serde_json = "1"
+sha1 = "0.10"
+opentelemetry = { version = "0.24", features = ["metrics", "trace", "logs"] }
+
+hyper = { version = "1", features = ["full"] }
+http = "1"
+http-body-util = "0.1"
+hyper-util = { version = "0.1", features = ["full"] }
