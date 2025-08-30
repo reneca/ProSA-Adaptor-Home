@@ -161,7 +161,7 @@ where
                     );
                 }
             })
-            .init();
+            .build();
 
         let watch_conn_rate = watch_conn.clone();
         let _observable_rate = proc
@@ -223,7 +223,7 @@ where
                     );
                 }
             })
-            .init();
+            .build();
 
         let _observable_state = proc
             .get_proc_param()
@@ -246,7 +246,7 @@ where
                     observer.observe(state_enum, &[KeyValue::new("conn", conn_type)]);
                 }
             })
-            .init();
+            .build();
 
         let (meter_system, watch_system) = watch::channel(FreeboxApiResponse::default());
         let _observable_temp = proc
@@ -328,7 +328,7 @@ where
                     );
                 }
             })
-            .init();
+            .build();
 
         let (meter_switch, watch_switch) = watch::channel(Vec::<Map<String, Value>>::new());
         let watch_switch_status = watch_switch.clone();
@@ -351,7 +351,7 @@ where
                         }
                     }
                 })
-                .init();
+                .build();
 
         let _observable_switch_speed = proc
             .get_proc_param()
@@ -370,7 +370,7 @@ where
                     }
                 }
             })
-            .init();
+            .build();
 
         let (meter_eth, watch_eth) = watch::channel(Vec::<FreeboxApiResponse>::new());
         let watch_eth_byte = watch_eth.clone();
@@ -403,7 +403,7 @@ where
                     }
                 }
             })
-            .init();
+            .build();
 
         let _observable_eth_packet = proc
             .get_proc_param()
@@ -454,7 +454,7 @@ where
                     }
                 }
             })
-            .init();
+            .build();
 
         Ok(Self {
             settings: proc.settings.clone(),

@@ -113,18 +113,17 @@ impl BBoxApiResponse {
 
         // Merge 2.4 and 5 GHz each other on different key
         if let Some(wireless_other) = other.wireless {
-            if let Some(wireless) = self.wireless.as_mut() {
-                if let Some(ssid) = wireless_other.get("ssid").and_then(|s| s.as_object()) {
-                    if let Some(id) = ssid.get("id").and_then(|i| i.as_number()) {
-                        wireless.insert(id.to_string(), Value::Object(ssid.clone()));
-                    }
-                }
-            } else if let Some(ssid) = wireless_other.get("ssid").and_then(|s| s.as_object()) {
-                if let Some(id) = ssid.get("id").and_then(|i| i.as_number()) {
-                    let mut wireless_map = HashMap::with_capacity(2);
-                    wireless_map.insert(id.to_string(), Value::Object(ssid.clone()));
-                    self.wireless = Some(wireless_map);
-                }
+            if let Some(wireless) = self.wireless.as_mut()
+                && let Some(ssid) = wireless_other.get("ssid").and_then(|s| s.as_object())
+                && let Some(id) = ssid.get("id").and_then(|i| i.as_number())
+            {
+                wireless.insert(id.to_string(), Value::Object(ssid.clone()));
+            } else if let Some(ssid) = wireless_other.get("ssid").and_then(|s| s.as_object())
+                && let Some(id) = ssid.get("id").and_then(|i| i.as_number())
+            {
+                let mut wireless_map = HashMap::with_capacity(2);
+                wireless_map.insert(id.to_string(), Value::Object(ssid.clone()));
+                self.wireless = Some(wireless_map);
             }
         }
     }
@@ -267,15 +266,14 @@ where
                             }
                         }
 
-                        if let Some(temp) = cpu.get("temperature") {
-                            if let Some(main) =
+                        if let Some(temp) = cpu.get("temperature")
+                            && let Some(main) =
                                 temp.get("main").and_then(BBoxApiResponse::parse_u64)
-                            {
-                                observer.observe(
-                                    main,
-                                    &[KeyValue::new("type", "temp"), KeyValue::new("temp", "main")],
-                                );
-                            }
+                        {
+                            observer.observe(
+                                main,
+                                &[KeyValue::new("type", "temp"), KeyValue::new("temp", "main")],
+                            );
                         }
                     }
 
@@ -304,7 +302,7 @@ where
                     }
                 }
             })
-            .init();
+            .build();
 
         let watch_bytes = watch_bbox.clone();
         let _observable_rate =
@@ -403,7 +401,7 @@ where
                         }
                     }
                 })
-                .init();
+                .build();
 
         let watch_packets = watch_bbox.clone();
         let _observable_rate =
@@ -606,7 +604,7 @@ where
                         }
                     }
                 })
-                .init();
+                .build();
 
         let watch_bandwidth = watch_bbox.clone();
         let _observable_rate =
@@ -668,7 +666,7 @@ where
                         }
                     }
                 })
-                .init();
+                .build();
 
         Ok(Self {
             settings: proc.settings.clone(),

@@ -117,7 +117,7 @@ where
                     );
                 }
             })
-            .init();
+            .build();
 
         let watch_power = watch_solar.clone();
         let _observable_power = proc
@@ -149,7 +149,7 @@ where
                     }
                 }
             })
-            .init();
+            .build();
 
         let _observable_wireless = proc
             .get_proc_param()
@@ -168,7 +168,7 @@ where
                     );
                 }
             })
-            .init();
+            .build();
 
         Ok(FetcherDeyeSolarAdaptor {
             uri_fetch: "/status.html".parse::<hyper::Uri>().unwrap(),

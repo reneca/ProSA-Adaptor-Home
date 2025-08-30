@@ -1,6 +1,6 @@
 [package]
 name = "prosa-adaptor-home"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Jeremy HERGAULT"]
 repository = "https://github.com/reneca/ProSA-Adaptor-Home"
 license = "LGPL-3.0-or-later"
@@ -12,9 +12,9 @@ adaptor = ["bbox::FetcherBBoxAdaptor", "deye_solar::FetcherDeyeSolarAdaptor", "f
 
 [dependencies]
 bytes = "1"
-prosa-fetcher = "0.1"
-prosa = "0.2"
-prosa-utils = "0.2"
+prosa-fetcher = "0.2"
+prosa = { version = "0.3", default-features = false }
+prosa-utils = { version = "0.3", default-features = false, features = ["msg"] }
 serde = "1"
 tokio = "1"
 thiserror = "2"
@@ -23,7 +23,7 @@ hmac = "0.12"
 
 serde_json = "1"
 sha1 = "0.10"
-opentelemetry = { version = "0.24", features = ["metrics", "trace", "logs"] }
+opentelemetry = { version = "0.29", features = ["metrics", "trace", "logs"] }
 
 hyper = { version = "1", features = ["full"] }
 http = "1"
