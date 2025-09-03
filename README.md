@@ -110,8 +110,12 @@ freebox:
 This adaptor is used to retrieve electricity production metrics from [DEYE micro inverters](https://deye.com/fr/product-category/inverter/microinverter/).
 It provides technical metrics from the micro-inverter and all production metrics.
 
-To configure this, you only need to set the URL of the micro-inverter exposed on your network along with the user credentials:
+To configure this, you need to set the URL of the micro-inverter exposed on your network along with the user credentials.
+An active time range is also provided to not try to get information during the night.
 ```yaml
 deye:
   url: http://user:password@192.168.1.x
+  active_time_range:
+    start: "06:00:00"
+    end: "23:00:00"
 ```

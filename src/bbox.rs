@@ -15,6 +15,7 @@ use prosa_fetcher::{
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use tokio::sync::watch;
+use tracing::{debug, warn};
 
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
 pub enum BBoxFetchState {
@@ -725,64 +726,90 @@ where
 
     async fn process_http_response(
         &mut self,
-        response: Response<Incoming>,
+        response: Result<Response<Incoming>, FetcherError<M>>,
     ) -> Result<FetchAction<M>, FetcherError<M>> {
-        if self.bbox_id.is_none() {
-            match response.status() {
-                StatusCode::OK => {
-                    for cookie in response.headers().get_all(hyper::header::SET_COOKIE).iter() {
-                        if let Ok(Some(bbox_id)) =
-                            cookie.to_str().map(|c| c.strip_prefix("BBOX_ID="))
-                        {
-                            self.bbox_id =
-                                Some(bbox_id.split(';').next().unwrap_or(bbox_id).to_string());
+        match response {
+            Ok(response) => {
+                if self.bbox_id.is_none() {
+                    match response.status() {
+                        StatusCode::OK => {
+                            for cookie in
+                                response.headers().get_all(hyper::header::SET_COOKIE).iter()
+                            {
+                                if let Ok(Some(bbox_id)) =
+                                    cookie.to_str().map(|c| c.strip_prefix("BBOX_ID="))
+                                {
+                                    self.bbox_id = Some(
+                                        bbox_id.split(';').next().unwrap_or(bbox_id).to_string(),
+                                    );
+                                }
+                            }
+
+                            if self.bbox_id.is_some() {
+                                // Go for next call
+                                Ok(FetchAction::Http)
+                            } else {
+                                Err(FetcherError::Other(
+                                    "Can't retrieve `BBOX_ID` from remote".to_string(),
+                                ))
+                            }
                         }
+                        code => Err(FetcherError::Other(format!(
+                            "Receive error from HTTP remote for login: {code}"
+                        ))),
                     }
+                } else {
+                    match response.status() {
+                        StatusCode::OK => {
+                            let server = response
+                                .headers()
+                                .get(http::header::SERVER)
+                                .and_then(|s| s.to_str().ok().map(|h| h.to_string()));
+                            let body = response
+                                .collect()
+                                .await
+                                .map_err(|e| FetcherError::Hyper(e, server.unwrap_or_default()))?
+                                .aggregate();
 
-                    if self.bbox_id.is_some() {
-                        // Go for next call
-                        Ok(FetchAction::Http)
-                    } else {
-                        Err(FetcherError::Other(
-                            "Can't retrieve `BBOX_ID` from remote".to_string(),
-                        ))
+                            // Parse the API response return to get the data
+                            let api_resp: Vec<BBoxApiResponse> =
+                                serde_json::from_reader(body.reader())
+                                    .map_err(|e| FetcherError::Io(e.into()))?;
+                            for bbox_api in api_resp {
+                                self.stats.merge(bbox_api);
+                            }
+
+                            self.state = self.state.next_state();
+                            if self.state != BBoxFetchState::End {
+                                // Call for next state
+                                Ok(FetchAction::Http)
+                            } else {
+                                // Every call have been made
+                                let _ = self.meter_bbox.send(self.stats.take());
+                                Ok(FetchAction::None)
+                            }
+                        }
+                        StatusCode::UNAUTHORIZED => {
+                            self.bbox_id = None;
+                            // Ask for a new token (it may expired)
+                            Ok(FetchAction::Http)
+                        }
+                        code => Err(FetcherError::Other(format!(
+                            "Receive error from HTTP remote: {code}"
+                        ))),
                     }
                 }
-                code => Err(FetcherError::Other(format!(
-                    "Receive error from HTTP remote for login: {code}"
-                ))),
             }
-        } else {
-            match response.status() {
-                StatusCode::OK => {
-                    let body = response.collect().await?.aggregate();
-
-                    // Parse the API response return to get the data
-                    let api_resp: Vec<BBoxApiResponse> = serde_json::from_reader(body.reader())
-                        .map_err(|e| FetcherError::Io(e.into()))?;
-                    for bbox_api in api_resp {
-                        self.stats.merge(bbox_api);
-                    }
-
-                    self.state = self.state.next_state();
-                    if self.state != BBoxFetchState::End {
-                        // Call for next state
-                        Ok(FetchAction::Http)
-                    } else {
-                        // Every call have been made
-                        let _ = self.meter_bbox.send(self.stats.take());
-                        Ok(FetchAction::None)
-                    }
+            Err(FetcherError::Hyper(he, addr)) => {
+                if he.is_canceled() {
+                    debug!(addr = addr, "HTTP error {:?}", he);
+                    Ok(FetchAction::None)
+                } else {
+                    warn!(addr = addr, "HTTP error {:?}", he);
+                    Err(FetcherError::Hyper(he, addr))
                 }
-                StatusCode::UNAUTHORIZED => {
-                    self.bbox_id = None;
-                    // Ask for a new token (it may expired)
-                    Ok(FetchAction::Http)
-                }
-                code => Err(FetcherError::Other(format!(
-                    "Receive error from HTTP remote: {code}"
-                ))),
             }
+            Err(e) => Err(e),
         }
     }
 }

@@ -16,7 +16,7 @@ use prosa_fetcher::{
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use tokio::sync::watch;
-use tracing::warn;
+use tracing::{debug, warn};
 
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
 pub enum FreeboxFetchState {
@@ -532,130 +532,176 @@ where
 
     async fn process_http_response(
         &mut self,
-        response: Response<Incoming>,
+        response: Result<Response<Incoming>, FetcherError<M>>,
     ) -> Result<FetchAction<M>, FetcherError<M>> {
-        if self.challenge_freebox.is_none() {
-            match response.status() {
-                StatusCode::OK => {
-                    let body = response.collect().await?.aggregate();
+        match response {
+            Ok(response) => {
+                if self.challenge_freebox.is_none() {
+                    match response.status() {
+                        StatusCode::OK => {
+                            let server = response
+                                .headers()
+                                .get(http::header::SERVER)
+                                .and_then(|s| s.to_str().ok().map(|h| h.to_string()));
+                            let body = response
+                                .collect()
+                                .await
+                                .map_err(|e| FetcherError::Hyper(e, server.unwrap_or_default()))?
+                                .aggregate();
 
-                    // Parse the login return to get the challenge value
-                    let login_json: FreeboxApiResponse = serde_json::from_reader(body.reader())
-                        .map_err(|e| FetcherError::Io(e.into()))?;
-                    if let Some(challenge) = login_json.get_string("challenge") {
-                        self.challenge_freebox = Some(challenge.to_string());
+                            // Parse the login return to get the challenge value
+                            let login_json: FreeboxApiResponse =
+                                serde_json::from_reader(body.reader())
+                                    .map_err(|e| FetcherError::Io(e.into()))?;
+                            if let Some(challenge) = login_json.get_string("challenge") {
+                                self.challenge_freebox = Some(challenge.to_string());
 
-                        // Go for next call to retrieve `session_token`
-                        Ok(FetchAction::Http)
-                    } else {
-                        Err(FetcherError::Other(
-                            "Can't retrieve `challenge` from remote".to_string(),
-                        ))
-                    }
-                }
-                code => Err(FetcherError::Other(format!(
-                    "Receive error from HTTP remote for challenge: {code}"
-                ))),
-            }
-        } else if self.session_token.is_none() {
-            match response.status() {
-                StatusCode::OK => {
-                    let body = response.collect().await?.aggregate();
-
-                    // Parse the login return to get the challenge value
-                    let login_json: FreeboxApiResponse = serde_json::from_reader(body.reader())
-                        .map_err(|e| FetcherError::Io(e.into()))?;
-                    if let Some(token) = login_json.get_string("session_token") {
-                        self.session_token = Some(token.to_string());
-
-                        // Go for next call to get all statistics
-                        Ok(FetchAction::Http)
-                    } else {
-                        Err(FetcherError::Other(
-                            "Can't retrieve `session_token` from remote for session".to_string(),
-                        ))
-                    }
-                }
-                code => Err(FetcherError::Other(format!(
-                    "Receive error from HTTP remote: {code}"
-                ))),
-            }
-        } else {
-            match response.status() {
-                StatusCode::OK => {
-                    let body = response.collect().await?.aggregate();
-
-                    if self.state == FreeboxFetchState::SwitchStatus {
-                        let switch_status_resp: Value = serde_json::from_reader(body.reader())
-                            .map_err(|e| FetcherError::Io(e.into()))?;
-                        if let Some(switch_status_array) =
-                            switch_status_resp.get("result").and_then(|r| r.as_array())
-                        {
-                            self.number_ports = switch_status_array.len() as u8;
-                            let _ = self.meter_switch.send(
-                                switch_status_array
-                                    .iter()
-                                    .map(|v| {
-                                        if let Some(value) = v.as_object() {
-                                            value.clone()
-                                        } else {
-                                            Map::new()
-                                        }
-                                    })
-                                    .collect(),
-                            );
-                            self.state = self.state.next_state(self.number_ports);
-                            Ok(FetchAction::Http)
-                        } else {
-                            Ok(FetchAction::None)
-                        }
-                    } else {
-                        // Parse the API response return to get the data
-                        let api_resp: FreeboxApiResponse =
-                            serde_json::from_reader(body.reader())
-                                .map_err(|e| FetcherError::Io(e.into()))?;
-                        if api_resp.success {
-                            match self.state {
-                                FreeboxFetchState::Connection => {
-                                    let _ = self.meter_conn.send(api_resp);
-                                }
-                                FreeboxFetchState::System => {
-                                    let _ = self.meter_system.send(api_resp);
-                                }
-                                FreeboxFetchState::SwitchPort(port_id) => {
-                                    let mut eth = self.meter_eth.borrow().clone();
-                                    if !eth.is_empty() {
-                                        eth[(port_id - 1) as usize] = api_resp;
-                                    } else {
-                                        eth = Vec::with_capacity(self.number_ports as usize);
-                                        for _ in 0..self.number_ports {
-                                            eth.push(FreeboxApiResponse::default());
-                                        }
-                                        eth[(port_id - 1) as usize] = api_resp;
-                                    }
-                                    let _ = self.meter_eth.send(eth);
-                                }
-                                _ => {}
+                                // Go for next call to retrieve `session_token`
+                                Ok(FetchAction::Http)
+                            } else {
+                                Err(FetcherError::Other(
+                                    "Can't retrieve `challenge` from remote".to_string(),
+                                ))
                             }
-                        } else {
-                            warn!("API[{:?}] respond with an error: {api_resp:?}", self.state);
-                            return Ok(FetchAction::None);
                         }
+                        code => Err(FetcherError::Other(format!(
+                            "Receive error from HTTP remote for challenge: {code}"
+                        ))),
+                    }
+                } else if self.session_token.is_none() {
+                    match response.status() {
+                        StatusCode::OK => {
+                            let server = response
+                                .headers()
+                                .get(http::header::SERVER)
+                                .and_then(|s| s.to_str().ok().map(|h| h.to_string()));
+                            let body = response
+                                .collect()
+                                .await
+                                .map_err(|e| FetcherError::Hyper(e, server.unwrap_or_default()))?
+                                .aggregate();
 
-                        self.state = self.state.next_state(self.number_ports);
-                        if self.state != FreeboxFetchState::End {
-                            // Call for next state
-                            Ok(FetchAction::Http)
-                        } else {
-                            // Every call have been made
-                            Ok(FetchAction::None)
+                            // Parse the login return to get the challenge value
+                            let login_json: FreeboxApiResponse =
+                                serde_json::from_reader(body.reader())
+                                    .map_err(|e| FetcherError::Io(e.into()))?;
+                            if let Some(token) = login_json.get_string("session_token") {
+                                self.session_token = Some(token.to_string());
+
+                                // Go for next call to get all statistics
+                                Ok(FetchAction::Http)
+                            } else {
+                                Err(FetcherError::Other(
+                                    "Can't retrieve `session_token` from remote for session"
+                                        .to_string(),
+                                ))
+                            }
                         }
+                        code => Err(FetcherError::Other(format!(
+                            "Receive error from HTTP remote: {code}"
+                        ))),
+                    }
+                } else {
+                    match response.status() {
+                        StatusCode::OK => {
+                            let server = response
+                                .headers()
+                                .get(http::header::SERVER)
+                                .and_then(|s| s.to_str().ok().map(|h| h.to_string()));
+                            let body = response
+                                .collect()
+                                .await
+                                .map_err(|e| FetcherError::Hyper(e, server.unwrap_or_default()))?
+                                .aggregate();
+
+                            if self.state == FreeboxFetchState::SwitchStatus {
+                                let switch_status_resp: Value =
+                                    serde_json::from_reader(body.reader())
+                                        .map_err(|e| FetcherError::Io(e.into()))?;
+                                if let Some(switch_status_array) =
+                                    switch_status_resp.get("result").and_then(|r| r.as_array())
+                                {
+                                    self.number_ports = switch_status_array.len() as u8;
+                                    let _ = self.meter_switch.send(
+                                        switch_status_array
+                                            .iter()
+                                            .map(|v| {
+                                                if let Some(value) = v.as_object() {
+                                                    value.clone()
+                                                } else {
+                                                    Map::new()
+                                                }
+                                            })
+                                            .collect(),
+                                    );
+                                    self.state = self.state.next_state(self.number_ports);
+                                    Ok(FetchAction::Http)
+                                } else {
+                                    Ok(FetchAction::None)
+                                }
+                            } else {
+                                // Parse the API response return to get the data
+                                let api_resp: FreeboxApiResponse =
+                                    serde_json::from_reader(body.reader())
+                                        .map_err(|e| FetcherError::Io(e.into()))?;
+                                if api_resp.success {
+                                    match self.state {
+                                        FreeboxFetchState::Connection => {
+                                            let _ = self.meter_conn.send(api_resp);
+                                        }
+                                        FreeboxFetchState::System => {
+                                            let _ = self.meter_system.send(api_resp);
+                                        }
+                                        FreeboxFetchState::SwitchPort(port_id) => {
+                                            let mut eth = self.meter_eth.borrow().clone();
+                                            if !eth.is_empty() {
+                                                eth[(port_id - 1) as usize] = api_resp;
+                                            } else {
+                                                eth =
+                                                    Vec::with_capacity(self.number_ports as usize);
+                                                for _ in 0..self.number_ports {
+                                                    eth.push(FreeboxApiResponse::default());
+                                                }
+                                                eth[(port_id - 1) as usize] = api_resp;
+                                            }
+                                            let _ = self.meter_eth.send(eth);
+                                        }
+                                        _ => {}
+                                    }
+                                } else {
+                                    warn!(
+                                        "API[{:?}] respond with an error: {api_resp:?}",
+                                        self.state
+                                    );
+                                    return Ok(FetchAction::None);
+                                }
+
+                                self.state = self.state.next_state(self.number_ports);
+                                if self.state != FreeboxFetchState::End {
+                                    // Call for next state
+                                    Ok(FetchAction::Http)
+                                } else {
+                                    // Every call have been made
+                                    Ok(FetchAction::None)
+                                }
+                            }
+                        }
+                        code => Err(FetcherError::Other(format!(
+                            "Receive error from HTTP remote: {code}"
+                        ))),
                     }
                 }
-                code => Err(FetcherError::Other(format!(
-                    "Receive error from HTTP remote: {code}"
-                ))),
             }
+            Err(FetcherError::Hyper(he, addr)) => {
+                if he.is_canceled() {
+                    debug!(addr = addr, "HTTP error {:?}", he);
+                    Ok(FetchAction::None)
+                } else {
+                    warn!(addr = addr, "HTTP error {:?}", he);
+                    Err(FetcherError::Hyper(he, addr))
+                }
+            }
+            Err(e) => Err(e),
         }
     }
 }

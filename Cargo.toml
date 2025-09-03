@@ -1,6 +1,6 @@
 [package]
 name = "prosa-adaptor-home"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["Jeremy HERGAULT"]
 repository = "https://github.com/reneca/ProSA-Adaptor-Home"
 license = "LGPL-3.0-or-later"
@@ -12,7 +12,7 @@ adaptor = ["bbox::FetcherBBoxAdaptor", "deye_solar::FetcherDeyeSolarAdaptor", "f
 
 [dependencies]
 bytes = "1"
-prosa-fetcher = "0.2"
+prosa-fetcher = "0.3"
 prosa = { version = "0.3", default-features = false }
 prosa-utils = { version = "0.3", default-features = false, features = ["msg"] }
 serde = "1"

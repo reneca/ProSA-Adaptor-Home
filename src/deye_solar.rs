@@ -24,6 +24,16 @@ struct DeyeSolarData {
     wireless_signal_quality: u8,
 }
 
+impl DeyeSolarData {
+    /// Method to create an empty `DeyeSolarData` from its `serial_number` and the total power yield
+    pub fn new(serial_number: String) -> DeyeSolarData {
+        DeyeSolarData {
+            serial_number,
+            ..Default::default()
+        }
+    }
+}
+
 impl TryFrom<String> for DeyeSolarData {
     type Error = &'static str;
 
@@ -80,6 +90,7 @@ impl TryFrom<String> for DeyeSolarData {
 #[derive(Adaptor)]
 pub struct FetcherDeyeSolarAdaptor {
     uri_fetch: Uri,
+    serial_number: Option<String>,
 
     // Observability
     meter_solar: watch::Sender<DeyeSolarData>,
@@ -158,7 +169,9 @@ where
             .with_description("Wireless information of the Deye inverter")
             .with_callback(move |observer| {
                 let solar_data = watch_solar.borrow();
-                if !solar_data.serial_number.is_empty() {
+                if !solar_data.serial_number.is_empty()
+                    && !solar_data.wireless_router_ssid.is_empty()
+                {
                     observer.observe(
                         solar_data.wireless_signal_quality as u64,
                         &[
@@ -172,6 +185,7 @@ where
 
         Ok(FetcherDeyeSolarAdaptor {
             uri_fetch: "/status.html".parse::<hyper::Uri>().unwrap(),
+            serial_number: None,
             meter_solar,
         })
     }
@@ -197,55 +211,83 @@ where
 
     async fn process_http_response(
         &mut self,
-        mut response: Response<Incoming>,
+        response: Result<Response<Incoming>, FetcherError<M>>,
     ) -> Result<FetchAction<M>, FetcherError<M>> {
-        debug!("Receive response: {:?}", response);
-        match response.status() {
-            StatusCode::OK => {
-                let mut data = String::with_capacity(4096);
-                while let Some(next) = response.frame().await {
-                    if let Some(chunk) = next?.data_ref() {
-                        data.push_str(
-                            String::from_utf8(chunk.to_vec())
-                                .map_err(|e| {
-                                    FetcherError::Other(format!("UTF8 HTML format error `{e}`"))
-                                })?
-                                .as_str(),
-                        );
+        match response {
+            Ok(mut response) => {
+                debug!("Receive response: {:?}", response);
+                match response.status() {
+                    StatusCode::OK => {
+                        let mut data = String::with_capacity(4096);
+                        while let Some(Ok(next)) = response.frame().await {
+                            if let Some(chunk) = next.data_ref() {
+                                data.push_str(
+                                    String::from_utf8(chunk.to_vec())
+                                        .map_err(|e| {
+                                            FetcherError::Other(format!(
+                                                "UTF8 HTML format error `{e}`"
+                                            ))
+                                        })?
+                                        .as_str(),
+                                );
 
-                        // Wait until information variables are received
-                        if data.contains("var status_c = ") {
-                            break;
+                                // Wait until information variables are received
+                                if data.contains("var status_c = ") {
+                                    break;
+                                }
+                            }
+                        }
+
+                        let solar_data = DeyeSolarData::try_from(data)
+                            .map_err(|e| FetcherError::Other(e.into()))?;
+
+                        if self.serial_number.is_none() {
+                            self.serial_number = Some(solar_data.serial_number.clone());
+                        }
+
+                        debug!("solar_data: {solar_data:?}");
+                        let _ = self.meter_solar.send(solar_data);
+                        Ok(FetchAction::None)
+                    }
+                    StatusCode::UNAUTHORIZED => {
+                        if response
+                            .headers()
+                            .contains_key(hyper::header::WWW_AUTHENTICATE)
+                        {
+                            // Recall with the credential
+                            Ok(FetchAction::Http)
+                        } else {
+                            warn!("Unauthorized from HTTP remote");
+                            Err(FetcherError::Other(
+                                "Unauthorized from HTTP remote".to_string(),
+                            ))
                         }
                     }
+                    code => {
+                        warn!("Receive wrong response: {:?}", response);
+                        Err(FetcherError::Other(format!(
+                            "Receive error from HTTP remote: {code}"
+                        )))
+                    }
                 }
-
-                let solar_data =
-                    DeyeSolarData::try_from(data).map_err(|e| FetcherError::Other(e.into()))?;
-                debug!("solar_data: {solar_data:?}");
-                let _ = self.meter_solar.send(solar_data);
-                Ok(FetchAction::None)
             }
-            StatusCode::UNAUTHORIZED => {
-                if response
-                    .headers()
-                    .contains_key(hyper::header::WWW_AUTHENTICATE)
-                {
-                    // Recall with the credential
-                    Ok(FetchAction::Http)
+            Err(FetcherError::Hyper(he, addr)) => {
+                if he.is_canceled() {
+                    debug!(addr = addr, "HTTP error {:?}", he);
+                    Ok(FetchAction::None)
                 } else {
-                    warn!("Unauthorized from HTTP remote");
-                    Err(FetcherError::Other(
-                        "Unauthorized from HTTP remote".to_string(),
-                    ))
+                    warn!(addr = addr, "HTTP error {:?}", he);
+                    Err(FetcherError::Hyper(he, addr))
                 }
             }
-            code => {
-                warn!("Receive wrong response: {:?}", response);
-                Err(FetcherError::Other(format!(
-                    "Receive error from HTTP remote: {code}"
-                )))
-            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn end_active_period(&mut self) {
+        if let Some(serial_number) = self.serial_number.take() {
+            // Send empty data to reset metrics
+            let _ = self.meter_solar.send(DeyeSolarData::new(serial_number));
         }
     }
 }
