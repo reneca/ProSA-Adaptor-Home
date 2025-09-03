@@ -91,6 +91,7 @@ impl TryFrom<String> for DeyeSolarData {
 pub struct FetcherDeyeSolarAdaptor {
     uri_fetch: Uri,
     serial_number: Option<String>,
+    canceled_counter: u64,
 
     // Observability
     meter_solar: watch::Sender<DeyeSolarData>,
@@ -186,6 +187,7 @@ where
         Ok(FetcherDeyeSolarAdaptor {
             uri_fetch: "/status.html".parse::<hyper::Uri>().unwrap(),
             serial_number: None,
+            canceled_counter: 0,
             meter_solar,
         })
     }
@@ -215,6 +217,7 @@ where
     ) -> Result<FetchAction<M>, FetcherError<M>> {
         match response {
             Ok(mut response) => {
+                self.canceled_counter = 0;
                 debug!("Receive response: {:?}", response);
                 match response.status() {
                     StatusCode::OK => {
@@ -273,8 +276,16 @@ where
             }
             Err(FetcherError::Hyper(he, addr)) => {
                 if he.is_canceled() {
-                    debug!(addr = addr, "HTTP error {:?}", he);
-                    Ok(FetchAction::None)
+                    self.canceled_counter += 1;
+
+                    // If there is too much canceled during 5 minutes
+                    if self.canceled_counter > 5 {
+                        warn!(addr = addr, "HTTP error {:?}", he);
+                        Err(FetcherError::Hyper(he, addr))
+                    } else {
+                        debug!(addr = addr, "HTTP error {:?}", he);
+                        Ok(FetchAction::None)
+                    }
                 } else {
                     warn!(addr = addr, "HTTP error {:?}", he);
                     Err(FetcherError::Hyper(he, addr))
