@@ -13,6 +13,7 @@ It exposes hardware metrics and internet consumption data for your router.
 ```yaml
 bbox:
   url: https://:password@mabbox.bytel.fr
+  authorization: false
   ssl:
     store:
       certs:
@@ -51,6 +52,7 @@ It exposes hardware metrics and internet consumption data for your router.
 ```yaml
 freebox:
   url: https://app_id:app_password@freebox_url
+  authorization: false
   ssl:
     store:
       certs:
@@ -115,6 +117,7 @@ An active time range is also provided to not try to get information during the n
 ```yaml
 deye:
   url: http://user:password@192.168.1.x
+  title_case_headers: true
   active_time_range:
     start: "06:00:00"
     end: "23:00:00"
