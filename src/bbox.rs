@@ -704,17 +704,16 @@ where
                     "Can't get password for remote API call".to_string(),
                 ))
             }
-        } else if let Some((method, uri)) = self.state.call() {
+        } else if let Some(bbox_id) = &self.bbox_id
+            && let Some((method, uri)) = self.state.call()
+        {
             // Send request depending of the state
             request_builder = request_builder
                 .method(method)
                 .uri(uri)
                 .header(hyper::header::CONNECTION, "keep-alive")
                 .header(hyper::header::ACCEPT, "application/json")
-                .header(
-                    hyper::header::COOKIE,
-                    format!("BBOX_ID={}", self.bbox_id.as_ref().unwrap()),
-                );
+                .header(hyper::header::COOKIE, format!("BBOX_ID={}", bbox_id));
             let request = request_builder.body(BoxBody::default())?;
             Ok(request)
         } else {

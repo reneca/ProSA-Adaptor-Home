@@ -488,13 +488,14 @@ where
                 .header(hyper::header::ACCEPT, "application/json");
             let request = request_builder.body(BoxBody::default())?;
             Ok(request)
-        } else if self.session_token.is_none() {
+        } else if let Some(challenge_freebox) = &self.challenge_freebox
+            && self.session_token.is_none()
+        {
             // Get a session token to login
             if let (Some(username), Some(challenge)) = (
                 self.settings.username(),
-                self.settings.challenge_password::<Hmac<sha1::Sha1>, M>(
-                    self.challenge_freebox.as_ref().unwrap().as_bytes(),
-                )?,
+                self.settings
+                    .challenge_password::<Hmac<sha1::Sha1>, M>(challenge_freebox.as_bytes())?,
             ) {
                 let json_data =
                     format!("{{\"app_id\":\"{username}\",\"password\":\"{challenge:02x}\"}}");
