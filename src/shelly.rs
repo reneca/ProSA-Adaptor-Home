@@ -32,7 +32,7 @@ struct ShellyEMStatus {
     /// Phase A apparent power measurement value, [VA]
     a_aprt_power: Option<f64>,
     /// Phase A power factor measurement value
-    a_pf: Option<u64>,
+    a_pf: Option<f64>,
     /// Phase A network frequency measurement value
     a_freq: Option<f64>,
     /// Phase A error conditions occurred. May contain `out_of_range:active_power`, `out_of_range:apparent_power`, `out_of_range:voltage`, `out_of_range:current`, (shown if at least one error is present)
@@ -48,7 +48,7 @@ struct ShellyEMStatus {
     /// Phase B apparent power measurement value, [VA]
     b_aprt_power: Option<f64>,
     /// Phase B power factor measurement value
-    b_pf: Option<u64>,
+    b_pf: Option<f64>,
     /// Phase B network frequency measurement value
     b_freq: Option<f64>,
     /// Phase B error conditions occurred. May contain `out_of_range:active_power`, `out_of_range:apparent_power`, `out_of_range:voltage`, `out_of_range:current`, (shown if at least one error is present)
@@ -64,7 +64,7 @@ struct ShellyEMStatus {
     /// Phase C apparent power measurement value, [VA]
     c_aprt_power: Option<f64>,
     /// Phase C power factor measurement value
-    c_pf: Option<u64>,
+    c_pf: Option<f64>,
     /// Phase C network frequency measurement value
     c_freq: Option<f64>,
     /// Phase C error conditions occurred. May contain `out_of_range:active_power`, `out_of_range:apparent_power`, `out_of_range:voltage`, `out_of_range:current`, (shown if at least one error is present)
@@ -537,7 +537,6 @@ where
             request_builder = request_builder
                 .method(Method::GET)
                 .uri(self.uri_status.clone())
-                .header(hyper::header::CONNECTION, "keep-alive")
                 .header(hyper::header::ACCEPT, "application/json");
             let request = request_builder.body(BoxBody::default())?;
             debug!("Send request: {:?}", request);
@@ -549,7 +548,6 @@ where
                     .uri("/rpc/Shelly.GetDeviceInfo".parse::<hyper::Uri>().expect(
                         "RPC Shelly Get device info URI for Shelly Adaptor should be parsed",
                     ))
-                    .header(hyper::header::CONNECTION, "keep-alive")
                     .header(hyper::header::ACCEPT, "application/json");
             let request = request_builder.body(BoxBody::default())?;
             debug!("Send device info request: {:?}", request);
@@ -590,7 +588,6 @@ where
                             }
 
                             let _ = self.shelly_status.send(shelly_status);
-                            Ok(FetchAction::None)
                         } else {
                             let server = response
                                 .headers()
@@ -609,12 +606,14 @@ where
                             debug!("Device info {device_info_resp:?}");
 
                             self.id = device_info_resp
-                                .get("id")
-                                .or(device_info_resp.get("name"))
-                                .and_then(|v| v.as_str().map(|s| s.to_string()));
-
-                            Ok(FetchAction::Http)
+                                .get("name")
+                                .and_then(|v| v.as_str().map(|s| s.to_string()))
+                                .or(device_info_resp
+                                    .get("id")
+                                    .and_then(|v| v.as_str().map(|s| s.to_string())));
                         }
+
+                        Ok(FetchAction::None)
                     }
                     StatusCode::UNAUTHORIZED => {
                         if response
