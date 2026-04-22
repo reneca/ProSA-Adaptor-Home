@@ -96,19 +96,19 @@ struct ShellyEMStatus {
 impl ShellyEMStatus {
     /// Return `true` if the EM measure threee phase installation, `false` otherwise
     fn is_three_phase(&self) -> bool {
-        self.a_voltage.is_some_and(|v| v > 0.0)
-            && self.b_voltage.is_some_and(|v| v > 0.0)
-            && self.c_voltage.is_some_and(|v| v > 0.0)
+        self.a_voltage.is_some_and(|v| v > 50.0)
+            && self.b_voltage.is_some_and(|v| v > 50.0)
+            && self.c_voltage.is_some_and(|v| v > 50.0)
     }
 
     fn get_voltage(&self) -> Option<(f64, Option<(f64, f64)>)> {
         if let Some(a_voltage) = self.a_voltage
-            && a_voltage > 0.0
+            && a_voltage > 50.0
         {
             if let Some(b_voltage) = self.b_voltage
-                && b_voltage > 0.0
+                && b_voltage > 50.0
                 && let Some(c_voltage) = self.c_voltage
-                && c_voltage > 0.0
+                && c_voltage > 50.0
             {
                 Some((a_voltage, Some((b_voltage, c_voltage))))
             } else {
@@ -205,8 +205,8 @@ struct ShellyEMData {
 
 impl ShellyEMData {
     fn get_power(&self) -> (f64, Option<(f64, f64)>) {
-        if self.a_total_act_energy > 0.0 {
-            if self.b_total_act_energy > 0.0 && self.c_total_act_energy > 0.0 {
+        if self.a_total_act_energy > 10.0 {
+            if self.b_total_act_energy > 10.0 && self.c_total_act_energy > 10.0 {
                 (
                     self.a_total_act_energy,
                     Some((self.b_total_act_energy, self.c_total_act_energy)),
@@ -214,9 +214,9 @@ impl ShellyEMData {
             } else {
                 (self.a_total_act_energy, None)
             }
-        } else if self.b_total_act_energy > 0.0 {
+        } else if self.b_total_act_energy > 10.0 {
             (self.b_total_act_energy, None)
-        } else if self.c_total_act_energy > 0.0 {
+        } else if self.c_total_act_energy > 10.0 {
             (self.c_total_act_energy, None)
         } else {
             (self.total_act, None)
@@ -224,8 +224,8 @@ impl ShellyEMData {
     }
 
     fn get_returned_power(&self) -> (f64, Option<(f64, f64)>) {
-        if self.a_total_act_ret_energy > 0.0 {
-            if self.b_total_act_ret_energy > 0.0 && self.c_total_act_ret_energy > 0.0 {
+        if self.a_total_act_ret_energy > 10.0 {
+            if self.b_total_act_ret_energy > 10.0 && self.c_total_act_ret_energy > 10.0 {
                 (
                     self.a_total_act_ret_energy,
                     Some((self.b_total_act_ret_energy, self.c_total_act_ret_energy)),
@@ -233,9 +233,9 @@ impl ShellyEMData {
             } else {
                 (self.a_total_act_ret_energy, None)
             }
-        } else if self.b_total_act_ret_energy > 0.0 {
+        } else if self.b_total_act_ret_energy > 10.0 {
             (self.b_total_act_ret_energy, None)
-        } else if self.c_total_act_ret_energy > 0.0 {
+        } else if self.c_total_act_ret_energy > 10.0 {
             (self.c_total_act_ret_energy, None)
         } else {
             (self.total_act_ret, None)
