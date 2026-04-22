@@ -264,11 +264,11 @@ impl ShellyStatus {
     fn get_error(&self) -> Option<String> {
         self.em
             .as_ref()
-            .map(|s| format!("Shelly[{}] EM error: {}", self.id, s.errors.join(", ")))
+            .and_then(|s| if !s.errors.is_empty() { Some(format!("Shelly[{}] EM error: {}", self.id, s.errors.join(", "))) } else { None })
             .or(self
                 .em_data
                 .as_ref()
-                .map(|s| format!("Shelly[{}] EM Data error: {}", self.id, s.errors.join(", "))))
+                .and_then(|s| if !s.errors.is_empty() { Some(format!("Shelly[{}] EM Data error: {}", self.id, s.errors.join(", "))) } else { None }))
     }
 
     fn get_celsius_temp(&self) -> Option<f64> {
