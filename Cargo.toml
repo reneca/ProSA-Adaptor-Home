@@ -1,6 +1,6 @@
 [package]
 name = "prosa-adaptor-home"
-version = "0.2.2"
+version = "0.2.3"
 authors = ["Jeremy HERGAULT"]
 repository = "https://github.com/reneca/ProSA-Adaptor-Home"
 license = "LGPL-3.0-or-later"
@@ -8,7 +8,7 @@ edition = "2024"
 description = "ProSA Adaptors for Home"
 
 [package.metadata.prosa.fetcher]
-adaptor = ["bbox::FetcherBBoxAdaptor", "deye_solar::FetcherDeyeSolarAdaptor", "freebox::FetcherFreeboxAdaptor"]
+adaptor = ["bbox::FetcherBBoxAdaptor", "deye_solar::FetcherDeyeSolarAdaptor", "freebox::FetcherFreeboxAdaptor", "shelly::FetcherShellyAdaptor"]
 
 [dependencies]
 bytes = "1"

@@ -12,7 +12,8 @@ It exposes hardware metrics and internet consumption data for your router.
 
 ```yaml
 bbox:
-  url: https://:password@mabbox.bytel.fr
+  target:
+    url: https://:password@mabbox.bytel.fr
   authorization: false
   ssl:
     store:
@@ -51,7 +52,8 @@ It exposes hardware metrics and internet consumption data for your router.
 
 ```yaml
 freebox:
-  url: https://app_id:app_password@freebox_url
+  target:
+    url: https://app_id:app_password@freebox_url
   authorization: false
   ssl:
     store:
@@ -116,9 +118,28 @@ To configure this, you need to set the URL of the micro-inverter exposed on your
 An active time range is also provided to not try to get information during the night.
 ```yaml
 deye:
-  url: http://user:password@192.168.1.x
+  period:
+    secs: 150
+    nanos: 0
+  target:
+    url: http://user:password@192.168.1.x
   title_case_headers: true
   active_time_range:
     start: "06:00:00"
     end: "23:00:00"
+```
+
+## Shelly
+
+[Shelly](https://shelly-api-docs.shelly.cloud/gen2/General/RPCChannels) devices from which power metrics are exposed.
+It provide metrics for:
+ - [EM](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/EM)
+ - [EMData](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/EMData)
+ - [PM](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/PM1)
+
+```yaml
+shelly:
+  target:
+    url: http://192.168.1.x
+  authorization: false
 ```
