@@ -278,8 +278,8 @@ where
                 if he.is_canceled() {
                     self.canceled_counter += 1;
 
-                    // If there is too much canceled during 5 minutes
-                    if self.canceled_counter > 5 {
+                    // If there is too much canceled
+                    if self.canceled_counter > 50 {
                         warn!(addr = addr, "HTTP error {:?}", he);
                         Err(FetcherError::Hyper(he, addr))
                     } else {
