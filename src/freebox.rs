@@ -7,8 +7,9 @@ use hmac::Hmac;
 use http::{Method, Request, Response, StatusCode};
 use http_body_util::{BodyExt as _, Full, combinators::BoxBody};
 use hyper::body::Incoming;
-use opentelemetry::KeyValue;
-use prosa::core::{adaptor::Adaptor, proc::ProcConfig};
+use prosa::{
+    core::{adaptor::Adaptor, proc::ProcConfig}, otel::KeyValue, tracing::{debug, warn},
+};
 use prosa_fetcher::{
     adaptor::FetcherAdaptor,
     proc::{FetchAction, FetcherError, FetcherProc, FetcherSettings},
@@ -16,7 +17,6 @@ use prosa_fetcher::{
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use tokio::sync::watch;
-use tracing::{debug, warn};
 
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
 pub enum FreeboxFetchState {
