@@ -143,3 +143,21 @@ shelly:
     url: http://192.168.1.x
   authorization: false
 ```
+
+## NUT UPS
+
+`FetcherNutUpsAdaptor` reads a UPS from a [NUT `upsd` server](https://networkupstools.org/docs/developer-guide.chunked/net-protocol.html). The URL path is the UPS name; the adaptor sends only `LIST VAR <name>` and waits for `END LIST VAR <name>` without requiring the server to close the connection.
+
+```yaml
+nut_ups:
+  target:
+    url: tcp://127.0.0.1:3493/eaton
+  period:
+    secs: 60
+    nanos: 0
+  timeout:
+    secs: 10
+    nanos: 0
+```
+
+The adaptor publishes `prosa_nut_ups_realpower` (W), `prosa_nut_battery_charge` (%), `prosa_nut_ups_load` (%), `prosa_nut_battery_runtime` (s), and `prosa_nut_ups_status` (value 1 with a `status` label). All have an `ups` label. Missing variables are omitted. `prosa_nut_fetch_success` is 1 after a complete valid response and 0 after a failed fetch; failed fetches clear the prior measurement snapshot.

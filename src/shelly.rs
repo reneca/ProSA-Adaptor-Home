@@ -7,15 +7,15 @@ use bytes::Buf as _;
 use http::{Method, Request, Response, StatusCode, Uri, request};
 use http_body_util::{BodyExt as _, combinators::BoxBody};
 use hyper::body::Incoming;
-use opentelemetry::KeyValue;
-use prosa::core::{adaptor::Adaptor, proc::ProcConfig as _};
+use prosa::{
+    core::{adaptor::Adaptor, proc::ProcConfig as _}, otel::KeyValue, tracing::{debug, warn},
+};
 use prosa_fetcher::{
     adaptor::FetcherAdaptor,
     proc::{FetchAction, FetcherError, FetcherProc},
 };
 use serde::Deserialize;
 use tokio::sync::watch;
-use tracing::{debug, warn};
 
 #[allow(unused)]
 #[derive(Debug, Default, Deserialize)]
