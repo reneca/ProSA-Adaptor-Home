@@ -2,7 +2,10 @@
 
 use bytes::Bytes;
 use prosa::{
-    core::{adaptor::Adaptor, proc::ProcConfig as _}, io::stream::{Stream, TargetSetting}, otel::KeyValue, tracing,
+    core::{adaptor::Adaptor, proc::ProcConfig as _},
+    io::stream::{Stream, TargetSetting},
+    otel::KeyValue,
+    tracing,
 };
 use prosa_fetcher::{
     adaptor::FetcherAdaptor,

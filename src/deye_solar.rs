@@ -6,7 +6,9 @@ use http::{Method, Request, Response, StatusCode, Uri, request};
 use http_body_util::{BodyExt as _, combinators::BoxBody};
 use hyper::body::Incoming;
 use prosa::{
-    core::{adaptor::Adaptor, proc::ProcConfig as _}, otel::KeyValue, tracing::{debug, warn},
+    core::{adaptor::Adaptor, proc::ProcConfig as _},
+    otel::KeyValue,
+    tracing::{debug, warn},
 };
 use prosa_fetcher::{
     adaptor::FetcherAdaptor,
