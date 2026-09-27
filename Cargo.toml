@@ -8,7 +8,7 @@ edition = "2024"
 description = "ProSA Adaptors for Home"
 
 [package.metadata.prosa.fetcher]
-adaptor = ["bbox::FetcherBBoxAdaptor", "deye_solar::FetcherDeyeSolarAdaptor", "freebox::FetcherFreeboxAdaptor", "shelly::FetcherShellyAdaptor", "nut_ups::FetcherNutUpsAdaptor"]
+adaptor = ["bbox::FetcherBBoxAdaptor", "deye_solar::FetcherDeyeSolarAdaptor", "ecoflow::FetcherEcoFlowAdaptor", "freebox::FetcherFreeboxAdaptor", "shelly::FetcherShellyAdaptor", "nut_ups::FetcherNutUpsAdaptor"]
 
 [dependencies]
 bytes = "1"
@@ -18,9 +18,11 @@ serde = "1"
 tokio = "1"
 thiserror = "2"
 hmac = "0.12"
+rand = "0.9"
 
 serde_json = "1"
 sha1 = "0.10"
+sha2 = "0.10"
 
 hyper = { version = "1", features = ["full"] }
 http = "1"

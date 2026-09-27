@@ -144,6 +144,24 @@ shelly:
   authorization: false
 ```
 
+## EcoFlow STREAM Ultra
+
+`FetcherEcoFlowAdaptor` uses EcoFlow's signed IoT Open HTTP API to discover one directly bound STREAM Ultra (`BK11`) system and retrieve its current telemetry. Create an application in the [EcoFlow Developer Portal](https://developer-eu.ecoflow.com/) first. The secret key in the URL must be encoded in [base64-url](https://en.wikipedia.org/wiki/Base64#URL_applications); keep the resulting configuration outside version control.
+
+```yaml
+ecoflow:
+  period:
+    secs: 60
+    nanos: 0
+  target:
+    url: https://ACCESS_KEY:BASE64URL_SECRET@api-e.ecoflow.com
+  authorization: false
+```
+
+Use `api.ecoflow.com` instead for a Global/US developer account. Device discovery only includes equipment bound directly to the developer account, not shared devices. Multiple batteries in one cascaded STREAM system are supported; multiple independent STREAM Ultra systems require separate selection support and are rejected.
+
+The adaptor publishes `prosa_ecoflow_battery_charge` in percent and `prosa_ecoflow_power` in watts. Both have an `sn` label. Power measurements use a `type` label: documented system values include `solar`, `battery`, `system_load`, `system_grid`, and `grid_connection`. Firmware-dependent values such as `solar_1` through `solar_4`, load-source breakdowns, `ac_output`, and `ac_outlet_1`/`ac_outlet_2` are emitted only when present. Signed values retain EcoFlow's convention; notably, positive battery power means charging and negative means discharging.
+
 ## NUT UPS
 
 `FetcherNutUpsAdaptor` reads a UPS from a [NUT `upsd` server](https://networkupstools.org/docs/developer-guide.chunked/net-protocol.html). The URL path is the UPS name; the adaptor sends only `LIST VAR <name>` and waits for `END LIST VAR <name>` without requiring the server to close the connection.
