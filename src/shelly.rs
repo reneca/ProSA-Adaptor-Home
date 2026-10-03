@@ -1,23 +1,29 @@
 //! Fetcher adaptor for [Shelly](https://shelly-api-docs.shelly.cloud/gen2/General/RPCChannels) appliances
 //! Use to read electricity power values out of it
 
-use std::{collections::HashMap, convert::Infallible};
+use std::{collections::HashMap, convert::Infallible, io};
 
-use bytes::Buf as _;
-use http::{Method, Request, Response, StatusCode, Uri, request};
-use http_body_util::{BodyExt as _, combinators::BoxBody};
+use bytes::Bytes;
+use http::{HeaderValue, Method, Request, Response, StatusCode, request};
+use http_body_util::{BodyExt as _, Limited, combinators::BoxBody};
 use hyper::body::Incoming;
 use prosa::{
     core::{adaptor::Adaptor, proc::ProcConfig as _},
     otel::KeyValue,
-    tracing::{debug, warn},
+    tracing::{debug, trace, warn},
 };
 use prosa_fetcher::{
     adaptor::FetcherAdaptor,
     proc::{FetchAction, FetcherError, FetcherProc},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, de::Error as _};
+use sha2::{Digest as _, Sha256};
 use tokio::sync::watch;
+
+const MAX_RESPONSE_BYTES: usize = 256 * 1024;
+const DEVICE_INFO_URI: &str = "/rpc/Shelly.GetDeviceInfo";
+const CONFIG_URI: &str = "/rpc/Shelly.GetConfig";
+const STATUS_URI: &str = "/rpc/Shelly.GetStatus";
 
 #[allow(unused)]
 #[derive(Debug, Default, Deserialize)]
@@ -246,6 +252,75 @@ impl ShellyEMData {
 }
 
 #[derive(Debug, Default, Deserialize)]
+struct ShellyPMEnergy {
+    /// Total of energy
+    total: f64,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ShellyPMStatus {
+    /// Id of the Switch component instance.
+    id: u8,
+    /// Configured name of the Switch component instance.
+    #[serde(default)]
+    name: String,
+    /// Instantaneous active power in W.
+    apower: Option<f64>,
+    /// Total consumed active energy.
+    aenergy: Option<ShellyPMEnergy>,
+    /// Total returned active energy.
+    ret_aenergy: Option<ShellyPMEnergy>,
+}
+
+fn deserialize_pm<'de, D>(deserializer: D) -> Result<Vec<ShellyPMStatus>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let components = HashMap::<String, serde_json::Value>::deserialize(deserializer)?;
+    let mut pm = components
+        .into_iter()
+        .filter(|(component, _)| component.starts_with("switch:"))
+        .map(|(component, value)| {
+            serde_json::from_value::<ShellyPMStatus>(value)
+                .map_err(|error| D::Error::custom(format!("Invalid {component} status: {error}")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    pm.sort_unstable_by_key(|status| status.id);
+    Ok(pm)
+}
+
+#[derive(Debug, Deserialize)]
+struct ShellySwitchConfig {
+    /// Channel ID
+    id: u8,
+    /// Channel name
+    name: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ShellyConfig {
+    #[serde(flatten)]
+    components: HashMap<String, serde_json::Value>,
+}
+
+impl ShellyConfig {
+    fn configured_switch_names(self) -> Result<HashMap<u8, String>, String> {
+        let mut names = HashMap::new();
+        for (component, value) in self.components {
+            if !component.starts_with("switch:") {
+                continue;
+            }
+            let config: ShellySwitchConfig = serde_json::from_value(value)
+                .map_err(|error| format!("Invalid {component} configuration: {error}"))?;
+            if let Some(name) = config.name.filter(|name| !name.trim().is_empty()) {
+                names.insert(config.id, name);
+            }
+        }
+        Ok(names)
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
 pub struct ShellyStatus {
     /// Identifier of the device
     #[serde(skip)]
@@ -257,12 +332,27 @@ pub struct ShellyStatus {
     #[serde(rename = "emdata:0")]
     em_data: Option<ShellyEMData>,
 
+    /// Switch components with power metering support.
+    #[serde(flatten, deserialize_with = "deserialize_pm")]
+    pm: Vec<ShellyPMStatus>,
+
     #[serde(rename = "temperature:0")]
     temperature: Option<HashMap<String, serde_json::Value>>,
     wifi: Option<HashMap<String, serde_json::Value>>,
 }
 
 impl ShellyStatus {
+    fn apply_pm_names(&mut self, names: &HashMap<u8, String>) {
+        self.pm.retain_mut(|status| {
+            if let Some(name) = names.get(&status.id) {
+                status.name.clone_from(name);
+                true
+            } else {
+                false
+            }
+        });
+    }
+
     fn get_error(&self) -> Option<String> {
         self.em
             .as_ref()
@@ -308,13 +398,115 @@ impl ShellyStatus {
     }
 }
 
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+enum ShellyRequest {
+    #[default]
+    DeviceInfo,
+    Config,
+    Status,
+}
+
+impl ShellyRequest {
+    fn uri(self) -> &'static str {
+        match self {
+            Self::DeviceInfo => DEVICE_INFO_URI,
+            Self::Config => CONFIG_URI,
+            Self::Status => STATUS_URI,
+        }
+    }
+}
+
+struct DigestChallenge {
+    realm: String,
+    nonce: String,
+}
+
+impl DigestChallenge {
+    fn parse(header: &str) -> Result<Self, String> {
+        if digest_parameter(header, "algorithm") != Some("SHA-256")
+            || digest_parameter(header, "qop") != Some("auth")
+        {
+            return Err("Shelly Digest challenge must use SHA-256 and qop=auth".into());
+        }
+        let realm =
+            digest_parameter(header, "realm").ok_or("Shelly Digest challenge is missing realm")?;
+        let nonce =
+            digest_parameter(header, "nonce").ok_or("Shelly Digest challenge is missing nonce")?;
+        if realm.contains(['"', '\\']) || nonce.contains(['"', '\\']) {
+            return Err("Shelly Digest challenge contains invalid characters".into());
+        }
+        Ok(Self {
+            realm: realm.to_string(),
+            nonce: nonce.to_string(),
+        })
+    }
+
+    fn authorization(&self, password: &[u8], uri: &str) -> Result<HeaderValue, String> {
+        let cnonce = format!("{:016x}", rand::random::<u64>());
+        self.authorization_with_cnonce(password, uri, &cnonce)
+    }
+
+    fn authorization_with_cnonce(
+        &self,
+        password: &[u8],
+        uri: &str,
+        cnonce: &str,
+    ) -> Result<HeaderValue, String> {
+        const NC: &str = "00000001";
+        let ha1 = sha256_hex(&[b"admin:", self.realm.as_bytes(), b":", password]);
+        let ha2 = sha256_hex(&[b"GET:", uri.as_bytes()]);
+        let response = sha256_hex(&[
+            ha1.as_bytes(),
+            b":",
+            self.nonce.as_bytes(),
+            b":",
+            NC.as_bytes(),
+            b":",
+            cnonce.as_bytes(),
+            b":auth:",
+            ha2.as_bytes(),
+        ]);
+
+        let value = format!(
+            "Digest username=\"admin\", realm=\"{}\", nonce=\"{}\", uri=\"{}\", algorithm=SHA-256, response=\"{}\", qop=auth, nc={NC}, cnonce=\"{}\"",
+            self.realm, self.nonce, uri, response, cnonce,
+        );
+        let mut value = HeaderValue::from_str(&value)
+            .map_err(|error| format!("Invalid digest authorization header: {error}"))?;
+        value.set_sensitive(true);
+        Ok(value)
+    }
+}
+
+fn digest_parameter<'a>(header: &'a str, name: &str) -> Option<&'a str> {
+    header
+        .strip_prefix("Digest ")?
+        .split(',')
+        .find_map(|parameter| {
+            let (parameter_name, value) = parameter.trim().split_once('=')?;
+            (parameter_name == name).then(|| value.trim_matches('"'))
+        })
+}
+
+fn sha256_hex(parts: &[&[u8]]) -> String {
+    let mut digest = Sha256::new();
+    for part in parts {
+        digest.update(part);
+    }
+    format!("{:x}", digest.finalize())
+}
+
 /// Adaptor for [Shelly](https://shelly-api-docs.shelly.cloud/) components
 #[derive(Adaptor)]
 pub struct FetcherShellyAdaptor {
-    uri_status: Uri,
+    request: ShellyRequest,
 
     /// Identifier of the device
     id: Option<String>,
+
+    switch_names: HashMap<u8, String>,
+    password: Option<Vec<u8>>,
+    digest_challenge: Option<DigestChallenge>,
 
     // Observability
     shelly_status: watch::Sender<ShellyStatus>,
@@ -415,6 +607,21 @@ macro_rules! observe_power {
     };
 }
 
+macro_rules! observe_pm_instantaneous {
+    ($value:expr, $observer:expr, $status:expr, $type:expr) => {
+        if let Some(value) = $value {
+            $observer.observe(
+                value,
+                &[
+                    KeyValue::new("name", $status.name.clone()),
+                    KeyValue::new("id", $status.id as i64),
+                    KeyValue::new("type", $type),
+                ],
+            );
+        }
+    };
+}
+
 impl<M> FetcherAdaptor<M> for FetcherShellyAdaptor
 where
     M: 'static
@@ -428,6 +635,7 @@ where
 {
     fn new(proc: &FetcherProc<M>) -> Result<Self, FetcherError<M>> {
         let (shelly_status, watch_shelly_status) = watch::channel(ShellyStatus::default());
+        let password = proc.settings.password()?;
 
         let watch_instantaneous = watch_shelly_status.clone();
         let _observable_instantaneous = proc
@@ -470,6 +678,14 @@ where
                         "power"
                     );
                 }
+                for pm_status in &shelly_status.pm {
+                    observe_pm_instantaneous!(
+                        pm_status.apower,
+                        observer,
+                        pm_status,
+                        "active_power"
+                    );
+                }
             })
             .build();
 
@@ -497,6 +713,28 @@ where
                         shelly_status.id.clone(),
                         "ret_power"
                     );
+                }
+                for pm_status in &shelly_status.pm {
+                    if let Some(energy) = &pm_status.aenergy {
+                        observer.observe(
+                            energy.total,
+                            &[
+                                KeyValue::new("name", pm_status.name.clone()),
+                                KeyValue::new("id", pm_status.id as i64),
+                                KeyValue::new("type", "power"),
+                            ],
+                        );
+                    }
+                    if let Some(energy) = &pm_status.ret_aenergy {
+                        observer.observe(
+                            energy.total,
+                            &[
+                                KeyValue::new("name", pm_status.name.clone()),
+                                KeyValue::new("id", pm_status.id as i64),
+                                KeyValue::new("type", "ret_power"),
+                            ],
+                        );
+                    }
                 }
             })
             .build();
@@ -535,10 +773,11 @@ where
             .build();
 
         Ok(FetcherShellyAdaptor {
-            uri_status: "/rpc/Shelly.GetStatus"
-                .parse::<hyper::Uri>()
-                .expect("RPC Shelly Get status URI for Shelly Adaptor should be parsed"),
+            request: ShellyRequest::default(),
             id: None,
+            switch_names: HashMap::new(),
+            password,
+            digest_challenge: None,
             shelly_status,
         })
     }
@@ -551,123 +790,137 @@ where
     fn create_http_request(
         &self,
         mut request_builder: request::Builder,
-    ) -> Result<Request<BoxBody<hyper::body::Bytes, Infallible>>, FetcherError<M>> {
-        if self.id.is_some() {
-            request_builder = request_builder
-                .method(Method::GET)
-                .uri(self.uri_status.clone())
-                .header(hyper::header::ACCEPT, "application/json");
-            let request = request_builder.body(BoxBody::default())?;
-            debug!("Send request: {:?}", request);
-            Ok(request)
-        } else {
-            request_builder =
-                request_builder
-                    .method(Method::GET)
-                    .uri("/rpc/Shelly.GetDeviceInfo".parse::<hyper::Uri>().expect(
-                        "RPC Shelly Get device info URI for Shelly Adaptor should be parsed",
-                    ))
-                    .header(hyper::header::ACCEPT, "application/json");
-            let request = request_builder.body(BoxBody::default())?;
-            debug!("Send device info request: {:?}", request);
-            Ok(request)
+    ) -> Result<Request<BoxBody<Bytes, Infallible>>, FetcherError<M>> {
+        let uri = self.request.uri();
+        request_builder = request_builder
+            .method(Method::GET)
+            .uri(uri)
+            .header(hyper::header::ACCEPT, "application/json");
+        if let (Some(password), Some(challenge)) = (&self.password, &self.digest_challenge) {
+            let authorization = challenge
+                .authorization(password, uri)
+                .map_err(FetcherError::Other)?;
+            request_builder
+                .headers_mut()
+                .ok_or_else(|| FetcherError::Other("Invalid Shelly request builder".into()))?
+                .insert(hyper::header::AUTHORIZATION, authorization);
         }
+        let request = request_builder.body(BoxBody::default())?;
+        trace!("Send Shelly request: {request:?}");
+        Ok(request)
     }
 
     async fn process_http_response(
         &mut self,
         response: Result<Response<Incoming>, FetcherError<M>>,
     ) -> Result<FetchAction<M>, FetcherError<M>> {
-        match response {
-            Ok(response) => {
-                debug!("Receive response: {:?}", response);
-                match response.status() {
-                    StatusCode::OK => {
-                        if let Some(id) = self.id.as_ref() {
-                            let server = response
-                                .headers()
-                                .get(http::header::SERVER)
-                                .and_then(|s| s.to_str().ok().map(|h| h.to_string()));
-                            let body = response
-                                .collect()
-                                .await
-                                .map_err(|e| FetcherError::Hyper(e, server.unwrap_or_default()))?
-                                .aggregate();
+        let response = response?;
+        trace!("Receive Shelly response: {response:?}");
+        if response.status() == StatusCode::UNAUTHORIZED {
+            if self.password.is_none() {
+                return Err(FetcherError::Other(
+                    "Shelly authentication is required; configure a base64-url encoded password in the target URL"
+                        .into(),
+                ));
+            }
+            if self.digest_challenge.is_some() {
+                return Err(FetcherError::Other(
+                    "Shelly digest authentication failed".into(),
+                ));
+            }
+            let challenge = response
+                .headers()
+                .get(hyper::header::WWW_AUTHENTICATE)
+                .ok_or_else(|| {
+                    FetcherError::Other(
+                        "Shelly returned 401 without a WWW-Authenticate header".into(),
+                    )
+                })?
+                .to_str()
+                .map_err(|error| {
+                    FetcherError::Other(format!("Invalid Shelly WWW-Authenticate header: {error}"))
+                })?;
+            self.digest_challenge =
+                Some(DigestChallenge::parse(challenge).map_err(FetcherError::Other)?);
+            return Ok(FetchAction::Http);
+        }
+        if response.status() != StatusCode::OK {
+            return Err(FetcherError::Other(format!(
+                "Shelly API returned HTTP {}",
+                response.status()
+            )));
+        }
 
-                            // Parse the API response return to get the data
-                            let mut shelly_status: ShellyStatus =
-                                serde_json::from_reader(body.reader())
-                                    .map_err(|e| FetcherError::Io(e.into()))?;
-                            shelly_status.id = id.clone();
+        self.digest_challenge = None;
+        let body = Limited::new(response.into_body(), MAX_RESPONSE_BYTES)
+            .collect()
+            .await
+            .map_err(|error| {
+                FetcherError::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Invalid Shelly response body: {error}"),
+                ))
+            })?
+            .to_bytes();
 
-                            if let Some(shelly_err) = shelly_status.get_error() {
-                                warn!(name = id, "{shelly_err}");
-                            } else {
-                                debug!("shelly status: {shelly_status:?}");
-                            }
-
-                            let _ = self.shelly_status.send(shelly_status);
-                        } else {
-                            let server = response
-                                .headers()
-                                .get(http::header::SERVER)
-                                .and_then(|s| s.to_str().ok().map(|h| h.to_string()));
-                            let body = response
-                                .collect()
-                                .await
-                                .map_err(|e| FetcherError::Hyper(e, server.unwrap_or_default()))?
-                                .aggregate();
-
-                            // Parse the API response return to get the data
-                            let device_info_resp: HashMap<String, serde_json::Value> =
-                                serde_json::from_reader(body.reader())
-                                    .map_err(|e| FetcherError::Io(e.into()))?;
-                            debug!("Device info {device_info_resp:?}");
-
-                            self.id = device_info_resp
-                                .get("name")
-                                .and_then(|v| v.as_str().map(|s| s.to_string()))
-                                .or(device_info_resp
-                                    .get("id")
-                                    .and_then(|v| v.as_str().map(|s| s.to_string())));
-                        }
-
-                        Ok(FetchAction::None)
-                    }
-                    StatusCode::UNAUTHORIZED => {
-                        if response
-                            .headers()
-                            .contains_key(hyper::header::WWW_AUTHENTICATE)
-                        {
-                            // Recall with the credential
-                            unimplemented!("Baerer auth need to be implemented");
-                            //Ok(FetchAction::Http)
-                        } else {
-                            warn!("Unauthorized from HTTP remote");
-                            Err(FetcherError::Other(
-                                "Unauthorized from HTTP remote".to_string(),
-                            ))
-                        }
-                    }
-                    code => {
-                        warn!("Receive wrong response: {:?}", response);
-                        Err(FetcherError::Other(format!(
-                            "Receive error from HTTP remote: {code}"
-                        )))
-                    }
+        match self.request {
+            ShellyRequest::DeviceInfo => {
+                let device_info: HashMap<String, serde_json::Value> = serde_json::from_slice(&body)
+                    .map_err(|error| {
+                        FetcherError::Io(io::Error::new(io::ErrorKind::InvalidData, error))
+                    })?;
+                debug!("Shelly device info: {device_info:?}");
+                self.id = device_info
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .filter(|name| !name.trim().is_empty())
+                    .or_else(|| device_info.get("id").and_then(|value| value.as_str()))
+                    .map(str::to_string);
+                if self.id.is_none() {
+                    return Err(FetcherError::Other(
+                        "Shelly device info is missing name and id".into(),
+                    ));
                 }
+                self.request = ShellyRequest::Config;
+                Ok(FetchAction::Http)
             }
-            Err(FetcherError::Hyper(he, addr)) => {
-                warn!(addr = addr, "HTTP error {:?}", he);
-                Err(FetcherError::Hyper(he, addr))
+            ShellyRequest::Config => {
+                let config: ShellyConfig = serde_json::from_slice(&body).map_err(|error| {
+                    FetcherError::Io(io::Error::new(io::ErrorKind::InvalidData, error))
+                })?;
+                self.switch_names = config
+                    .configured_switch_names()
+                    .map_err(FetcherError::Other)?;
+                self.request = ShellyRequest::Status;
+                Ok(FetchAction::Http)
             }
-            Err(e) => Err(e),
+            ShellyRequest::Status => {
+                let mut shelly_status: ShellyStatus =
+                    serde_json::from_slice(&body).map_err(|error| {
+                        FetcherError::Io(io::Error::new(io::ErrorKind::InvalidData, error))
+                    })?;
+                shelly_status.id = self
+                    .id
+                    .clone()
+                    .ok_or_else(|| FetcherError::Other("Shelly device id is unavailable".into()))?;
+                shelly_status.apply_pm_names(&self.switch_names);
+
+                if let Some(shelly_error) = shelly_status.get_error() {
+                    warn!(name = shelly_status.id, "{shelly_error}");
+                } else {
+                    debug!("Shelly status: {shelly_status:?}");
+                }
+                let _ = self.shelly_status.send(shelly_status);
+                Ok(FetchAction::None)
+            }
         }
     }
 
     fn end_active_period(&mut self) {
-        // Reset ID at the end of the period
+        self.request = ShellyRequest::default();
         self.id = None;
+        self.switch_names.clear();
+        self.digest_challenge = None;
     }
 }
 
@@ -747,5 +1000,108 @@ mod tests {
         assert_eq!(0.0, shelly_em_data.total_act);
         assert_eq!(0.0, shelly_em_data.total_act_ret);
         assert!(shelly_em_data.errors.is_empty());
+    }
+
+    #[test]
+    fn discovers_only_named_pm_channels() {
+        let config: ShellyConfig = serde_json::from_str(
+            r#"{
+                "sys": {"device": {"name": null}},
+                "switch:0": {"id": 0, "name": "Chauffe-eau"},
+                "switch:1": {"id": 1, "name": null},
+                "switch:2": {"id": 2, "name": "Prise Terrasse"},
+                "switch:3": {"id": 3, "name": "Lum. Terrasse"}
+            }"#,
+        )
+        .unwrap();
+
+        let names = config.configured_switch_names().unwrap();
+        assert_eq!(names.len(), 3);
+        assert_eq!(names.get(&0).map(String::as_str), Some("Chauffe-eau"));
+        assert_eq!(names.get(&2).map(String::as_str), Some("Prise Terrasse"));
+        assert_eq!(names.get(&3).map(String::as_str), Some("Lum. Terrasse"));
+        assert!(!names.contains_key(&1));
+    }
+
+    #[test]
+    fn parses_pm_power_and_energy_for_named_channels() {
+        let names = HashMap::from([
+            (0, "Chauffe-eau".to_string()),
+            (2, "Prise Terrasse".to_string()),
+            (3, "Lum. Terrasse".to_string()),
+        ]);
+        let mut status: ShellyStatus = serde_json::from_str(
+            r#"{
+                "sys": {"mac": "C8F09E844AF8"},
+                "wifi": {"rssi": -55},
+                "switch:0": {
+                    "id": 0, "apower": 1250.5, "voltage": 234.7, "current": 5.328,
+                    "aenergy": {"total": 1569460.0}, "ret_aenergy": {"total": 0.0}
+                },
+                "switch:1": {
+                    "id": 1, "apower": 42.0,
+                    "aenergy": {"total": 100.0}, "ret_aenergy": {"total": 0.0}
+                },
+                "switch:2": {
+                    "id": 2, "apower": 10.25, "voltage": 234.8, "current": 0.044,
+                    "aenergy": {"total": 11551.0}, "ret_aenergy": {"total": 54.0}
+                },
+                "switch:3": {
+                    "id": 3, "apower": 3.5, "errors": ["overpower"],
+                    "aenergy": {"total": 5.0}, "ret_aenergy": {"total": 0.0}
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(status.pm.len(), 4);
+        status.apply_pm_names(&names);
+        assert_eq!(status.pm.len(), 3);
+        assert_eq!(status.pm[0].name, "Chauffe-eau");
+        assert_eq!(status.pm[0].apower, Some(1250.5));
+        assert_eq!(
+            status.pm[0].aenergy.as_ref().map(|energy| energy.total),
+            Some(1569460.0)
+        );
+        assert_eq!(status.pm[1].id, 2);
+        assert_eq!(
+            status.pm[1].ret_aenergy.as_ref().map(|energy| energy.total),
+            Some(54.0)
+        );
+    }
+
+    #[test]
+    fn builds_shelly_digest_authorization() {
+        let challenge = DigestChallenge::parse(
+            r#"Digest qop="auth", realm="shellypro4pm-test", nonce="abc", algorithm=SHA-256"#,
+        )
+        .unwrap();
+
+        let authorization = challenge
+            .authorization_with_cnonce(b"password", STATUS_URI, "0123456789abcdef")
+            .unwrap();
+        let authorization = authorization.to_str().unwrap();
+        assert!(authorization.contains("username=\"admin\""));
+        assert!(authorization.contains("nc=00000001"));
+        assert!(
+            authorization.contains(
+                "response=\"ef4a1e6b16e41e6635282d6a0c214426a9c0057bec3a164ae56a843e9b4493e8\""
+            ),
+            "{authorization}"
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_digest_challenges() {
+        assert!(
+            DigestChallenge::parse(r#"Basic realm="shellypro4pm-c8f09e844af8", algorithm=SHA-256"#)
+                .is_err()
+        );
+        assert!(
+            DigestChallenge::parse(
+                r#"Digest realm="shellypro4pm-c8f09e844af8", nonce="abc", qop="auth", algorithm=MD5"#
+            )
+            .is_err()
+        );
     }
 }
