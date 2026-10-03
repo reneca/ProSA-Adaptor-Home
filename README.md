@@ -132,10 +132,10 @@ deye:
 ## Shelly
 
 [Shelly](https://shelly-api-docs.shelly.cloud/gen2/General/RPCChannels) devices from which power metrics are exposed.
-It provide metrics for:
+It provides metrics for:
  - [EM](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/EM)
  - [EMData](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/EMData)
- - [PM](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/PM1)
+ - Switch channels with [power metering](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/Switch)
 
 ```yaml
 shelly:
@@ -143,6 +143,17 @@ shelly:
     url: http://192.168.1.x
   authorization: false
 ```
+
+For a password-protected Gen2+ device, use the fixed `admin` username and encode the password as base64-url in the target URL:
+
+```yaml
+shelly:
+  target:
+    url: http://admin:BASE64URL_PASSWORD@192.168.1.x
+  authorization: false
+```
+
+Named power-metering switch channels are discovered from the Shelly configuration; unnamed channels are ignored. Their configured name is preserved in the `name` label. `prosa_shelly_instantaneous` reports active power and `prosa_shelly_power` reports consumed and returned active energy in Wh with `type` values `power` and `ret_power`.
 
 ## EcoFlow STREAM Ultra
 
