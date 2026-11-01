@@ -1,4 +1,4 @@
-//! Read-only EcoFlow STREAM Ultra metrics through the IoT Open HTTP API.
+//! Read-only EcoFlow STREAM metrics through the IoT Open HTTP API.
 
 use std::{
     collections::{BTreeSet, VecDeque},
@@ -27,6 +27,9 @@ use sha2::Sha256;
 use tokio::sync::watch;
 
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
+/// Serial number prefixes of STREAM models that report system telemetry through the Developer API:
+/// Ultra, Pro, AC Pro, Max, AC and Ultra X.
+const STREAM_SERIAL_PREFIXES: [&str; 6] = ["BK11", "BK12", "BK31", "BK41", "BK51", "BK61"];
 
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
 enum EcoFlowFetchState {
@@ -155,7 +158,7 @@ fn valid_serial_number(serial_number: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric())
 }
 
-fn stream_ultra_serials(data: &Value) -> Result<VecDeque<String>, String> {
+fn stream_serials(data: &Value) -> Result<VecDeque<String>, String> {
     let devices = data
         .as_array()
         .ok_or("EcoFlow device list data must be an array")?;
@@ -164,15 +167,18 @@ fn stream_ultra_serials(data: &Value) -> Result<VecDeque<String>, String> {
         let Some(serial_number) = device.get("sn").and_then(Value::as_str) else {
             continue;
         };
-        if serial_number.starts_with("BK11") {
+        if STREAM_SERIAL_PREFIXES
+            .iter()
+            .any(|prefix| serial_number.starts_with(prefix))
+        {
             if !valid_serial_number(serial_number) {
-                return Err("EcoFlow returned an invalid STREAM Ultra serial number".into());
+                return Err("EcoFlow returned an invalid STREAM serial number".into());
             }
             serial_numbers.insert(serial_number.to_owned());
         }
     }
     if serial_numbers.is_empty() {
-        return Err("No directly bound EcoFlow STREAM Ultra was found".into());
+        return Err("No directly bound EcoFlow STREAM device was found".into());
     }
     Ok(serial_numbers.into_iter().collect())
 }
@@ -218,7 +224,7 @@ fn timestamp_millis() -> Result<u128, String> {
         .map_err(|_| "System time is before the Unix epoch".into())
 }
 
-/// Fetches telemetry for one directly bound EcoFlow STREAM Ultra system.
+/// Fetches telemetry for one directly bound EcoFlow STREAM system.
 #[derive(Adaptor)]
 pub struct FetcherEcoFlowAdaptor {
     access_key: String,
@@ -261,8 +267,7 @@ impl FetcherEcoFlowAdaptor {
     fn process_data<M: Send>(&mut self, data: Value) -> Result<FetchAction<M>, FetcherError<M>> {
         match self.state {
             EcoFlowFetchState::DeviceList => {
-                self.pending_serial_numbers =
-                    stream_ultra_serials(&data).map_err(FetcherError::Other)?;
+                self.pending_serial_numbers = stream_serials(&data).map_err(FetcherError::Other)?;
                 self.main_serial_numbers.clear();
                 self.state = EcoFlowFetchState::MainDevice;
                 Ok(FetchAction::Http)
@@ -276,7 +281,7 @@ impl FetcherEcoFlowAdaptor {
                 if self.pending_serial_numbers.is_empty() {
                     if self.main_serial_numbers.len() != 1 {
                         return Err(FetcherError::Other(
-                            "Multiple independent EcoFlow STREAM Ultra systems were found".into(),
+                            "Multiple independent EcoFlow STREAM systems were found".into(),
                         ));
                     }
                     self.main_serial_number = self.main_serial_numbers.first().cloned();
@@ -325,7 +330,7 @@ where
             .get_proc_param()
             .meter("ecoflow")
             .f64_observable_gauge("prosa_ecoflow_battery_charge")
-            .with_description("EcoFlow STREAM Ultra system battery charge")
+            .with_description("EcoFlow STREAM system battery charge")
             .with_unit("%")
             .with_callback(move |observer| {
                 if let Some(snapshot) = battery.borrow().as_ref() {
@@ -341,7 +346,7 @@ where
             .get_proc_param()
             .meter("ecoflow")
             .f64_observable_gauge("prosa_ecoflow_power")
-            .with_description("EcoFlow STREAM Ultra instantaneous power")
+            .with_description("EcoFlow STREAM instantaneous power")
             .with_unit("W")
             .with_callback(move |observer| {
                 if let Some(snapshot) = watch_snapshot.borrow().as_ref() {
@@ -507,17 +512,26 @@ mod tests {
     }
 
     #[test]
-    fn discovers_only_stream_ultra_devices() {
-        let serial_numbers = stream_ultra_serials(&json!([
-            {"sn": "BK11ZEBB2H350011", "online": 1},
+    fn discovers_only_stream_devices() {
+        let serial_numbers = stream_serials(&json!([
             {"sn": "BK61ZEBB2H350012", "online": 1},
+            {"sn": "BK11ZEBB2H350011", "online": 1},
+            {"sn": "BK01ZEBB2H350013", "online": 1},
+            {"sn": "HW52ZEBB2H350014", "online": 1},
+            {"online": 1},
             {"sn": "BK11ZEBB2H350011", "online": 1}
         ]))
         .unwrap();
         assert_eq!(
             serial_numbers.into_iter().collect::<Vec<_>>(),
-            ["BK11ZEBB2H350011"]
+            ["BK11ZEBB2H350011", "BK61ZEBB2H350012"]
         );
+    }
+
+    #[test]
+    fn rejects_device_list_without_stream_devices() {
+        assert!(stream_serials(&json!([{"sn": "HW52ZEBB2H350014", "online": 1}])).is_err());
+        assert!(stream_serials(&json!([{"sn": "BK12bad/sn", "online": 1}])).is_err());
     }
 
     #[test]

@@ -155,9 +155,9 @@ shelly:
 
 Named power-metering switch channels are discovered from the Shelly configuration; unnamed channels are ignored. Their configured name is preserved in the `name` label. `prosa_shelly_instantaneous` reports active power and `prosa_shelly_power` reports consumed and returned active energy in Wh with `type` values `power` and `ret_power`.
 
-## EcoFlow STREAM Ultra
+## EcoFlow STREAM
 
-`FetcherEcoFlowAdaptor` uses EcoFlow's signed IoT Open HTTP API to discover one directly bound STREAM Ultra (`BK11`) system and retrieve its current telemetry. Create an application in the [EcoFlow Developer Portal](https://developer-eu.ecoflow.com/) first. The secret key in the URL must be encoded in [base64-url](https://en.wikipedia.org/wiki/Base64#URL_applications); keep the resulting configuration outside version control.
+`FetcherEcoFlowAdaptor` uses EcoFlow's signed IoT Open HTTP API to discover one directly bound STREAM system and retrieve its current telemetry. Supported models are STREAM Ultra (`BK11`), Pro (`BK12`), AC Pro (`BK31`), Max (`BK41`), AC (`BK51`), and Ultra X (`BK61`); other EcoFlow devices on the account are ignored. Create an application in the [EcoFlow Developer Portal](https://developer-eu.ecoflow.com/) first. The secret key in the URL must be encoded in [base64-url](https://en.wikipedia.org/wiki/Base64#URL_applications); keep the resulting configuration outside version control.
 
 ```yaml
 ecoflow:
@@ -169,7 +169,7 @@ ecoflow:
   authorization: false
 ```
 
-Use `api.ecoflow.com` instead for a Global/US developer account. Device discovery only includes equipment bound directly to the developer account, not shared devices. Multiple batteries in one cascaded STREAM system are supported; multiple independent STREAM Ultra systems require separate selection support and are rejected.
+Use `api.ecoflow.com` instead for a Global/US developer account. Device discovery only includes equipment bound directly to the developer account, not shared devices. Multiple batteries in one cascaded STREAM system are supported; multiple independent STREAM systems require separate selection support and are rejected.
 
 The adaptor publishes `prosa_ecoflow_battery_charge` in percent and `prosa_ecoflow_power` in watts. Both have an `sn` label. Power measurements use a `type` label: documented system values include `solar`, `battery`, `system_load`, `system_grid`, and `grid_connection`. Firmware-dependent values such as `solar_1` through `solar_4`, load-source breakdowns, `ac_output`, and `ac_outlet_1`/`ac_outlet_2` are emitted only when present. Signed values retain EcoFlow's convention; notably, positive battery power means charging and negative means discharging.
 
