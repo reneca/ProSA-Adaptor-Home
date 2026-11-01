@@ -30,6 +30,28 @@ const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 /// Serial number prefixes of STREAM models that report system telemetry through the Developer API:
 /// Ultra, Pro, AC Pro, Max, AC and Ultra X.
 const STREAM_SERIAL_PREFIXES: [&str; 6] = ["BK11", "BK12", "BK31", "BK41", "BK51", "BK61"];
+/// Metric type, power, voltage and current quota keys of each solar input.
+const SOLAR_INPUT_KEYS: [(&str, &str, &str, &str); 4] = [
+    ("solar_1", "powGetPv", "plugInInfoPvVol", "plugInInfoPvAmp"),
+    (
+        "solar_2",
+        "powGetPv2",
+        "plugInInfoPv2Vol",
+        "plugInInfoPv2Amp",
+    ),
+    (
+        "solar_3",
+        "powGetPv3",
+        "plugInInfoPv3Vol",
+        "plugInInfoPv3Amp",
+    ),
+    (
+        "solar_4",
+        "powGetPv4",
+        "plugInInfoPv4Vol",
+        "plugInInfoPv4Amp",
+    ),
+];
 
 #[derive(Debug, Default, Copy, Clone, PartialEq)]
 enum EcoFlowFetchState {
@@ -59,15 +81,42 @@ impl EcoFlowApiResponse {
     }
 }
 
+#[derive(Debug, Default, Copy, Clone, PartialEq)]
+struct SolarInput {
+    power: Option<f64>,
+    voltage: Option<f64>,
+    current: Option<f64>,
+}
+
+impl SolarInput {
+    fn from_data(
+        data: &Map<String, Value>,
+        (_, power_key, voltage_key, current_key): (&str, &str, &str, &str),
+    ) -> Result<Self, String> {
+        let voltage = number(data, voltage_key)?;
+        let current = number(data, current_key)?;
+        // Firmware 1.0.1.41 and later reports 0 for per-input power and only exposes voltage and current.
+        let power = match number(data, power_key)? {
+            Some(power) if power != 0.0 => Some(power),
+            power => voltage
+                .zip(current)
+                .map(|(voltage, current)| voltage * current)
+                .or(power),
+        };
+        Ok(Self {
+            power,
+            voltage,
+            current,
+        })
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq)]
 struct EcoFlowSnapshot {
     serial_number: String,
     battery_charge: f64,
     solar_power: Option<f64>,
-    solar_1_power: Option<f64>,
-    solar_2_power: Option<f64>,
-    solar_3_power: Option<f64>,
-    solar_4_power: Option<f64>,
+    solar_inputs: [SolarInput; 4],
     battery_power: Option<f64>,
     system_load_power: Option<f64>,
     load_from_solar_power: Option<f64>,
@@ -90,15 +139,16 @@ impl EcoFlowSnapshot {
         if !(0.0..=100.0).contains(&battery_charge) {
             return Err("EcoFlow cmsBattSoc must be between 0 and 100".into());
         }
+        let mut solar_inputs = [SolarInput::default(); 4];
+        for (solar_input, keys) in solar_inputs.iter_mut().zip(SOLAR_INPUT_KEYS) {
+            *solar_input = SolarInput::from_data(data, keys)?;
+        }
 
         Ok(Self {
             serial_number,
             battery_charge,
             solar_power: number(data, "powGetPvSum")?,
-            solar_1_power: number(data, "powGetPv")?,
-            solar_2_power: number(data, "powGetPv2")?,
-            solar_3_power: number(data, "powGetPv3")?,
-            solar_4_power: number(data, "powGetPv4")?,
+            solar_inputs,
             battery_power: number(data, "powGetBpCms")?,
             system_load_power: number(data, "powGetSysLoad")?,
             load_from_solar_power: number(data, "powGetSysLoadFromPv")?,
@@ -115,10 +165,6 @@ impl EcoFlowSnapshot {
     fn powers(&self) -> impl Iterator<Item = (&'static str, f64)> {
         [
             ("solar", self.solar_power),
-            ("solar_1", self.solar_1_power),
-            ("solar_2", self.solar_2_power),
-            ("solar_3", self.solar_3_power),
-            ("solar_4", self.solar_4_power),
             ("battery", self.battery_power),
             ("system_load", self.system_load_power),
             ("load_from_solar", self.load_from_solar_power),
@@ -132,6 +178,16 @@ impl EcoFlowSnapshot {
         ]
         .into_iter()
         .filter_map(|(power_type, value)| value.map(|value| (power_type, value)))
+        .chain(self.solar_values(|input| input.power))
+    }
+
+    fn solar_values(
+        &self,
+        value: fn(&SolarInput) -> Option<f64>,
+    ) -> impl Iterator<Item = (&'static str, f64)> {
+        SOLAR_INPUT_KEYS.iter().zip(&self.solar_inputs).filter_map(
+            move |((input_type, ..), input)| value(input).map(|value| (*input_type, value)),
+        )
     }
 }
 
@@ -342,6 +398,7 @@ where
             })
             .build();
 
+        let power = watch_snapshot.clone();
         let _power = proc
             .get_proc_param()
             .meter("ecoflow")
@@ -349,13 +406,56 @@ where
             .with_description("EcoFlow STREAM instantaneous power")
             .with_unit("W")
             .with_callback(move |observer| {
-                if let Some(snapshot) = watch_snapshot.borrow().as_ref() {
+                if let Some(snapshot) = power.borrow().as_ref() {
                     for (power_type, value) in snapshot.powers() {
                         observer.observe(
                             value,
                             &[
                                 KeyValue::new("sn", snapshot.serial_number.clone()),
                                 KeyValue::new("type", power_type),
+                            ],
+                        );
+                    }
+                }
+            })
+            .build();
+
+        let voltage = watch_snapshot.clone();
+        let _voltage = proc
+            .get_proc_param()
+            .meter("ecoflow")
+            .f64_observable_gauge("prosa_ecoflow_voltage")
+            .with_description("EcoFlow STREAM input voltage")
+            .with_unit("V")
+            .with_callback(move |observer| {
+                if let Some(snapshot) = voltage.borrow().as_ref() {
+                    for (voltage_type, value) in snapshot.solar_values(|input| input.voltage) {
+                        observer.observe(
+                            value,
+                            &[
+                                KeyValue::new("sn", snapshot.serial_number.clone()),
+                                KeyValue::new("type", voltage_type),
+                            ],
+                        );
+                    }
+                }
+            })
+            .build();
+
+        let _current = proc
+            .get_proc_param()
+            .meter("ecoflow")
+            .f64_observable_gauge("prosa_ecoflow_current")
+            .with_description("EcoFlow STREAM input current")
+            .with_unit("A")
+            .with_callback(move |observer| {
+                if let Some(snapshot) = watch_snapshot.borrow().as_ref() {
+                    for (current_type, value) in snapshot.solar_values(|input| input.current) {
+                        observer.observe(
+                            value,
+                            &[
+                                KeyValue::new("sn", snapshot.serial_number.clone()),
+                                KeyValue::new("type", current_type),
                             ],
                         );
                     }
@@ -497,6 +597,62 @@ mod tests {
         assert_eq!(snapshot.battery_power, Some(-225.5));
         assert_eq!(snapshot.ac_outlet_1_power, Some(120.0));
         assert_eq!(snapshot.powers().count(), 12);
+    }
+
+    #[test]
+    fn keeps_reported_solar_input_power_on_legacy_firmware() {
+        let data = json!({
+            "cmsBattSoc": 50,
+            "powGetPv": 400.0,
+            "plugInInfoPvVol": 40.0,
+            "plugInInfoPvAmp": 0.0,
+            "powGetPv2": 0.0
+        });
+        let snapshot = EcoFlowSnapshot::from_data("BK11ZEBB2H350011".into(), &data).unwrap();
+        assert_eq!(
+            snapshot
+                .solar_values(|input| input.power)
+                .collect::<Vec<_>>(),
+            [("solar_1", 400.0), ("solar_2", 0.0)]
+        );
+    }
+
+    #[test]
+    fn computes_solar_input_power_from_voltage_and_current() {
+        let data = json!({
+            "cmsBattSoc": 50,
+            "powGetPv": 0.0,
+            "plugInInfoPvVol": 40.0,
+            "plugInInfoPvAmp": 10.0,
+            "plugInInfoPv2Vol": "32.5",
+            "plugInInfoPv2Amp": "2",
+            "plugInInfoPv3Vol": 30.0
+        });
+        let snapshot = EcoFlowSnapshot::from_data("BK11ZEBB2H350011".into(), &data).unwrap();
+        assert_eq!(
+            snapshot
+                .solar_values(|input| input.power)
+                .collect::<Vec<_>>(),
+            [("solar_1", 400.0), ("solar_2", 65.0)]
+        );
+        assert_eq!(
+            snapshot
+                .solar_values(|input| input.voltage)
+                .collect::<Vec<_>>(),
+            [("solar_1", 40.0), ("solar_2", 32.5), ("solar_3", 30.0)]
+        );
+        assert_eq!(
+            snapshot
+                .solar_values(|input| input.current)
+                .collect::<Vec<_>>(),
+            [("solar_1", 10.0), ("solar_2", 2.0)]
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_solar_input_measurement() {
+        let data = json!({"cmsBattSoc": 50, "plugInInfoPv4Amp": "invalid"});
+        assert!(EcoFlowSnapshot::from_data("BK11ZEBB2H350011".into(), &data).is_err());
     }
 
     #[test]

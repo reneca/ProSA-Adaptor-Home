@@ -173,6 +173,8 @@ Use `api.ecoflow.com` instead for a Global/US developer account. Device discover
 
 The adaptor publishes `prosa_ecoflow_battery_charge` in percent and `prosa_ecoflow_power` in watts. Both have an `sn` label. Power measurements use a `type` label: documented system values include `solar`, `battery`, `system_load`, `system_grid`, and `grid_connection`. Firmware-dependent values such as `solar_1` through `solar_4`, load-source breakdowns, `ac_output`, and `ac_outlet_1`/`ac_outlet_2` are emitted only when present. Signed values retain EcoFlow's convention; notably, positive battery power means charging and negative means discharging.
 
+`solar_1` through `solar_4` power is computed from each input's voltage and current. `prosa_ecoflow_voltage` in volts and `prosa_ecoflow_current` in amperes expose those raw per-input measurements with the same `sn` label and `type` values `solar_1` through `solar_4`, emitted only when present.
+
 ## NUT UPS
 
 `FetcherNutUpsAdaptor` reads a UPS from a [NUT `upsd` server](https://networkupstools.org/docs/developer-guide.chunked/net-protocol.html). The URL path is the UPS name; the adaptor sends only `LIST VAR <name>` and waits for `END LIST VAR <name>` without requiring the server to close the connection.
