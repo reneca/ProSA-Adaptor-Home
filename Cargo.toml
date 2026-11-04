@@ -1,6 +1,6 @@
 [package]
 name = "prosa-adaptor-home"
-version = "0.3.4"
+version = "0.3.5"
 authors = ["Jeremy HERGAULT"]
 repository = "https://github.com/reneca/ProSA-Adaptor-Home"
 license = "LGPL-3.0-or-later"
@@ -12,13 +12,14 @@ adaptor = ["bbox::FetcherBBoxAdaptor", "deye_solar::FetcherDeyeSolarAdaptor", "e
 
 [dependencies]
 bytes = "1"
-prosa-fetcher = "0.5"
+prosa-fetcher = { git = "https://github.com/reneca/ProSA-Fetcher.git", branch = "mqtt", features = ["mqtt"] }
 prosa = { version = "0.5", default-features = false }
 serde = "1"
 tokio = "1"
 thiserror = "2"
 hmac = "0.12"
 rand = "0.9"
+url = "2"
 
 serde_json = "1"
 sha1 = "0.10"
@@ -31,4 +32,3 @@ hyper-util = { version = "0.1", features = ["full"] }
 
 [dev-dependencies]
 prosa-utils = { version = "0.5", default-features = false, features = ["msg"] }
-url = "2"
